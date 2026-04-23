@@ -9,7 +9,7 @@ so a single stitched texture PNG can be applied to every tile.
 Outputs are written under  outputs/<name>/
     outputs/<name>/meshes/mesh.obj              (single mesh)
     outputs/<name>/meshes/mesh_tile_00_00.obj … (tiled)
-    outputs/<name>/metadata.csv
+    outputs/<name>/surface_metadata.csv
 
 Usage
 -----
@@ -17,6 +17,8 @@ python3 src/tif_to_obj.py inputs/DSM_10km_623_57.tif --out myterrain
 python3 src/tif_to_obj.py inputs/DSM_10km_623_57.tif --resolution 5 --out myterrain
 python3 src/tif_to_obj.py inputs/DSM_10km_623_57.tif --resolution 2 --tiles 4 --out myterrain
 python3 src/tif_to_obj.py inputs/DSM_10km_623_57.tif --resolution 1 --tiles 10 --out myterrain
+python3 src/tif_to_obj.py inputs/DSM_10km_623_57.tif --crop 0.3 0.7 0.3 0.7 --out myterrain_center
+python3 src/tif_to_obj.py inputs/DSM_10km_623_57.tif --crop 0.3 0.7 0.3 0.7 --invert-crop --out myterrain_outer
 
 Requires: rasterio  (pip install rasterio)
 """
@@ -154,12 +156,40 @@ def save_metadata_csv(path: str, out_dir: Path):
                         rows.append((f"{prefix}:mean", float(valid.mean())))
                         rows.append((f"{prefix}:std",  float(valid.std())))
 
-    csv_path = out_dir / "metadata.csv"
+    csv_path = out_dir / "surface_metadata.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["key", "value"])
         writer.writerows(rows)
     print(f"  Metadata → {csv_path}  ({len(rows)} entries)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CROP
+# ══════════════════════════════════════════════════════════════════════════════
+
+def crop_heightmap(heights: np.ndarray, crop: tuple) -> np.ndarray:
+    """
+    Slice the heightmap to a percentage bounding box.
+
+    crop = (min_x, max_x, min_y, max_y) as fractions 0..1:
+        X: 0 = west edge,  1 = east edge  (columns)
+        Y: 0 = south edge, 1 = north edge (rows, inverted vs array axis)
+
+    Example: (0.3, 0.7, 0.3, 0.7) → centre 40 % of the terrain in both axes.
+    """
+    min_x, max_x, min_y, max_y = crop
+    H, W = heights.shape
+
+    c0 = int(round(min_x * (W - 1)))
+    c1 = int(round(max_x * (W - 1))) + 1
+    # Rows increase southward, so south=row H-1, north=row 0 → invert Y
+    r0 = int(round((1.0 - max_y) * (H - 1)))
+    r1 = int(round((1.0 - min_y) * (H - 1))) + 1
+
+    c0, c1 = max(0, c0), min(W, c1)
+    r0, r1 = max(0, r0), min(H, r1)
+    return heights[r0:r1, c0:c1]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -267,7 +297,9 @@ def export(vertices, faces, uvs, obj_path: Path, n_workers: int):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def export_tiled(heights: np.ndarray, res_x: float, res_y: float,
-                 mesh_dir: Path, n_tiles: int, n_workers: int):
+                 mesh_dir: Path, n_tiles: int, n_workers: int,
+                 origin_c: int = 0, origin_r: int = 0,
+                 full_size_x: float = None, full_size_y: float = None):
     """
     Split the heightmap into an n_tiles × n_tiles grid of OBJ files.
 
@@ -277,13 +309,20 @@ def export_tiled(heights: np.ndarray, res_x: float, res_y: float,
     Each tile uses LOCAL UV coordinates (0..1 within the tile), so each tile
     pairs with its own texture tile from stitch_texture.py --tiles N.
 
+    origin_c / origin_r: column / row offset of heights[0,0] within the full
+    terrain heightmap.  Used when heights is a cropped sub-region so that
+    vertex positions are placed in the full terrain's coordinate frame
+    (centred on the full terrain's centre) rather than the crop's centre.
+    full_size_x / full_size_y: physical extent of the full terrain in metres.
+
     Output files: <mesh_dir>/mesh_tile_<row>_<col>.obj
     tile_00_00 = north-west corner; row index increases southward,
     column index increases eastward — matching stitch_texture tile naming.
     """
     H, W = heights.shape
-    full_size_x = (W - 1) * res_x
-    full_size_y = (H - 1) * res_y
+    if full_size_x is None:
+        full_size_x = (W - 1) * res_x
+        full_size_y = (H - 1) * res_y
 
     row_bounds = np.round(np.linspace(0, H - 1, n_tiles + 1)).astype(int)
     col_bounds = np.round(np.linspace(0, W - 1, n_tiles + 1)).astype(int)
@@ -303,17 +342,74 @@ def export_tiled(heights: np.ndarray, res_x: float, res_y: float,
             print(f"  [{idx:3d}/{total}] mesh_tile_{ri:02d}_{ci:02d}  "
                   f"{tw}×{th} = {th*tw:,} verts, {2*(th-1)*(tw-1):,} tris …")
 
-            # Build with local UVs (0..1 per tile); vertices are centred at origin.
+            # Build with local UVs (0..1 per tile), then shift into the full
+            # terrain's coordinate frame (origin = centre of full terrain).
             vertices, faces, uvs = build_mesh(tile_h, res_x, res_y)
 
-            # Shift vertices into global terrain coordinates so tiles fit together.
-            x_origin = -full_size_x / 2 + c0 * res_x
-            y_origin = -full_size_y / 2 + r0 * res_y
+            x_origin = -full_size_x / 2 + (origin_c + c0) * res_x
+            y_origin = -full_size_y / 2 + (origin_r + r0) * res_y
             vertices[:, 0] += x_origin + (tw - 1) * res_x / 2
             vertices[:, 1] += y_origin + (th - 1) * res_y / 2
 
             obj_path = mesh_dir / f"mesh_tile_{ri:02d}_{ci:02d}.obj"
             export(vertices, faces, uvs, obj_path, n_workers)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INVERTED-CROP EXPORT
+# ══════════════════════════════════════════════════════════════════════════════
+
+def export_inverted_crop(heights: np.ndarray, res_x: float, res_y: float,
+                         crop: tuple, mesh_dir: Path, n_workers: int):
+    """
+    Export the 4 rectangular strips surrounding the crop bounding box.
+
+    Each strip gets its own OBJ with local UVs (0..1) and vertices placed in
+    global terrain coordinates, so the strips fit seamlessly around the inner
+    crop mesh (mesh.obj / mesh_tile_*.obj).
+
+    Files produced:
+        mesh_outer_top.obj      northern strip (full width)
+        mesh_outer_bottom.obj   southern strip (full width)
+        mesh_outer_left.obj     western strip  (inner Y range)
+        mesh_outer_right.obj    eastern strip  (inner Y range)
+
+    Strips that are zero-width (crop touches the terrain edge) are skipped.
+    """
+    min_x, max_x, min_y, max_y = crop
+    H, W = heights.shape
+    full_size_x = (W - 1) * res_x
+    full_size_y = (H - 1) * res_y
+
+    c0 = int(round(min_x * (W - 1)))
+    c1 = int(round(max_x * (W - 1))) + 1
+    r0 = int(round((1.0 - max_y) * (H - 1)))
+    r1 = int(round((1.0 - min_y) * (H - 1))) + 1
+
+    # (label, height_slice, col_start_in_full_hmap, row_start_in_full_hmap)
+    pieces = []
+    if r0 > 0:
+        pieces.append(("top",    heights[0:r0 + 1, :],     0,    0))
+    if r1 < H:
+        pieces.append(("bottom", heights[r1 - 1:H, :],     0,    r1 - 1))
+    if c0 > 0:
+        pieces.append(("left",   heights[r0:r1, 0:c0 + 1], 0,    r0))
+    if c1 < W:
+        pieces.append(("right",  heights[r0:r1, c1 - 1:W], c1-1, r0))
+
+    print(f"  Outer    : {len(pieces)} strip(s)")
+    for label, tile_h, col_start, row_start in pieces:
+        th, tw = tile_h.shape
+        print(f"  {label:6s}   {tw}×{th} = {th*tw:,} verts, {2*(th-1)*(tw-1):,} tris …")
+
+        vertices, faces, uvs = build_mesh(tile_h, res_x, res_y)
+
+        x_origin = -full_size_x / 2 + col_start * res_x
+        y_origin = -full_size_y / 2 + row_start * res_y
+        vertices[:, 0] += x_origin + (tw - 1) * res_x / 2
+        vertices[:, 1] += y_origin + (th - 1) * res_y / 2
+
+        export(vertices, faces, uvs, mesh_dir / f"mesh_outer_{label}.obj", n_workers)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -341,9 +437,20 @@ def parse_args():
                    help="Split into N×N tiles (1 = single mesh)")
     p.add_argument("--out",         default=None,
                    help="Output folder name (default: <tif_stem>_<resolution>m)")
+    p.add_argument("--crop",        type=float, nargs=4,
+                   metavar=("MIN_X", "MAX_X", "MIN_Y", "MAX_Y"),
+                   help="Crop to a sub-region given as fractions 0–1 "
+                        "(X: 0=west 1=east, Y: 0=south 1=north). "
+                        "Example: --crop 0.3 0.7 0.3 0.7")
+    p.add_argument("--invert-crop", action="store_true",
+                   help="Export the 4 outer strips surrounding --crop instead of the "
+                        "inner region (requires --crop)")
     p.add_argument("--workers",     type=int, default=os.cpu_count(),
                    help="Parallel workers for OBJ export (default: all CPU cores)")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.invert_crop and not args.crop:
+        p.error("--invert-crop requires --crop")
+    return args
 
 
 def main():
@@ -353,9 +460,27 @@ def main():
     print(f"\nConverting: {args.tif}")
     print(f"  resolution={args.resolution} m  tiles={args.tiles}×{args.tiles}"
           f"  workers={args.workers}")
+    if args.crop:
+        mn_x, mx_x, mn_y, mx_y = args.crop
+        print(f"  Crop     : X {mn_x*100:.1f}%–{mx_x*100:.1f}%  "
+              f"Y {mn_y*100:.1f}%–{mx_y*100:.1f}%")
     print(f"  Output   → {out_dir}")
 
     heights, res_x, res_y = load_heightmap(args.tif, args.resolution)
+
+    # Record full terrain extent before any crop so that all mesh outputs
+    # share a single coordinate frame centred on the full terrain's centre.
+    H_full, W_full = heights.shape
+    full_size_x = (W_full - 1) * res_x
+    full_size_y = (H_full - 1) * res_y
+    crop_c0 = crop_r0 = 0
+
+    if args.crop and not args.invert_crop:
+        mn_x, _mx_x, _mn_y, mx_y = args.crop
+        crop_c0 = int(round(mn_x  * (W_full - 1)))
+        crop_r0 = int(round((1.0 - mx_y) * (H_full - 1)))
+        heights = crop_heightmap(heights, args.crop)
+        print(f"  Cropped  : {heights.shape[1]}×{heights.shape[0]} px")
 
     H, W = heights.shape
     print(f"  Heights  : min={heights.min():.1f} m  max={heights.max():.1f} m  "
@@ -365,18 +490,26 @@ def main():
     print("  Saving metadata …")
     save_metadata_csv(args.tif, out_dir)
 
-    if args.tiles == 1:
+    if args.invert_crop:
+        export_inverted_crop(heights, res_x, res_y, args.crop, mesh_dir, args.workers)
+    elif args.tiles == 1:
         print("  Building mesh …")
         vertices, faces, uvs = build_mesh(heights, res_x, res_y)
+        # Shift from crop-centred origin into the full terrain's coordinate frame.
+        vertices[:, 0] += -full_size_x / 2 + crop_c0 * res_x + (W - 1) * res_x / 2
+        vertices[:, 1] += -full_size_y / 2 + crop_r0 * res_y + (H - 1) * res_y / 2
         print("  Exporting …")
         export(vertices, faces, uvs, mesh_dir / "mesh.obj", args.workers)
     else:
         per_tile = (H // args.tiles) * (W // args.tiles)
         print(f"  ~{per_tile:,} vertices / tile  (~{2*per_tile:,} triangles / tile)")
-        export_tiled(heights, res_x, res_y, mesh_dir, args.tiles, args.workers)
+        export_tiled(heights, res_x, res_y, mesh_dir, args.tiles, args.workers,
+                     origin_c=crop_c0, origin_r=crop_r0,
+                     full_size_x=full_size_x, full_size_y=full_size_y)
 
     print("\nDone.")
 
 
 if __name__ == "__main__":
     main()
+
