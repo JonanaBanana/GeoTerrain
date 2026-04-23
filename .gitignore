@@ -1,0 +1,15 @@
+# Input datasets (elevation TIFs, satellite imagery — too large for git)
+inputs/
+
+# Generated outputs
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db

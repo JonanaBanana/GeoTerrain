@@ -13,10 +13,10 @@ Outputs are written under  outputs/<name>/
 
 Usage
 -----
-python3 tif_to_obj.py DSM_10km_623_57.tif
-python3 tif_to_obj.py DSM_10km_623_57.tif --resolution 5 --out myterrain
-python3 tif_to_obj.py DSM_10km_623_57.tif --resolution 2 --tiles 4 --out myterrain
-python3 tif_to_obj.py DSM_10km_623_57.tif --resolution 1 --tiles 10 --out myterrain
+python3 src/tif_to_obj.py inputs/DSM_10km_623_57.tif --out myterrain
+python3 src/tif_to_obj.py inputs/DSM_10km_623_57.tif --resolution 5 --out myterrain
+python3 src/tif_to_obj.py inputs/DSM_10km_623_57.tif --resolution 2 --tiles 4 --out myterrain
+python3 src/tif_to_obj.py inputs/DSM_10km_623_57.tif --resolution 1 --tiles 10 --out myterrain
 
 Requires: rasterio  (pip install rasterio)
 """

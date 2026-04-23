@@ -10,9 +10,9 @@ Outputs are written under  outputs/<name>/textures/
 
 Usage
 -----
-python3 stitch_texture.py <tile_folder> --out myterrain
-python3 stitch_texture.py <tile_folder> --out myterrain --size 8192
-python3 stitch_texture.py <tile_folder> --out myterrain --size 8192 --tiles 4
+python3 src/stitch_texture.py inputs/<tile_folder> --out myterrain
+python3 src/stitch_texture.py inputs/<tile_folder> --out myterrain --size 8192
+python3 src/stitch_texture.py inputs/<tile_folder> --out myterrain --size 8192 --tiles 4
 """
 
 import argparse
