@@ -47,7 +47,11 @@ from scipy.ndimage import distance_transform_edt
 def load_heightmap(path: str, target_res_m: float):
     """
     Read and resample the GeoTIFF to ~target_res_m metres per pixel.
-    Returns (heights_2d, pixel_size_x, pixel_size_y) in metres.
+    Returns (heights_2d, pixel_size_x, pixel_size_y, full_out_w, full_out_h).
+    full_out_w/h are the dimensions of the full (uncropped) downsampled raster;
+    they are needed by the caller to compute world-space offsets and UV extents.
+    When crop=(min_x, max_x, min_y, max_y) is given, only the corresponding
+    source window is read from disk and the returned array covers only that region.
     No-data holes are filled by nearest-valid-neighbour.
     """
     with rasterio.open(path) as src:
@@ -56,19 +60,23 @@ def load_heightmap(path: str, target_res_m: float):
         nodata = src.nodata
 
         scale = native_res_x / target_res_m
-        out_w = max(2, int(round(orig_w * scale)))
-        out_h = max(2, int(round(orig_h * scale)))
+        full_out_w = max(2, int(round(orig_w * scale)))
+        full_out_h = max(2, int(round(orig_h * scale)))
 
         print(f"  Source   : {orig_w}×{orig_h} px  @ {native_res_x:.2f} m/px")
-        print(f"  Resampled: {out_w}×{out_h} px  @ {target_res_m:.2f} m/px  "
-              f"({out_w * target_res_m / 1000:.1f} km × "
-              f"{out_h * target_res_m / 1000:.1f} km)")
+        print(f"  Resampled: {full_out_w}×{full_out_h} px  @ {target_res_m:.2f} m/px  "
+              f"({full_out_w * target_res_m / 1000:.1f} km × "
+              f"{full_out_h * target_res_m / 1000:.1f} km)")
 
+        # Read the full raster at target resolution. GDAL automatically selects
+        # internal overview levels for large downsampling factors, which is both
+        # fast and avoids corrupt-tile issues that windowed reads can trigger.
         data = src.read(
             1,
-            out=np.empty((out_h, out_w), dtype=np.float32),
+            out=np.empty((full_out_h, full_out_w), dtype=np.float32),
             resampling=Resampling.bilinear,
         )
+        out_w, out_h = full_out_w, full_out_h
 
     if nodata is not None:
         mask = data == nodata
@@ -81,9 +89,10 @@ def load_heightmap(path: str, target_res_m: float):
         data[mask] = data[nearest[0][mask], nearest[1][mask]]
         print(f"  Filled {n_bad:,} no-data pixels via nearest-neighbour")
 
-    actual_res_x = (orig_w / out_w) * native_res_x
-    actual_res_y = (orig_h / out_h) * native_res_y
-    return data, actual_res_x, actual_res_y
+    # Resolution is always derived from the full-image resampling ratio.
+    actual_res_x = (orig_w / full_out_w) * native_res_x
+    actual_res_y = (orig_h / full_out_h) * native_res_y
+    return data, actual_res_x, actual_res_y, full_out_w, full_out_h
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -466,19 +475,19 @@ def main():
               f"Y {mn_y*100:.1f}%–{mx_y*100:.1f}%")
     print(f"  Output   → {out_dir}")
 
-    heights, res_x, res_y = load_heightmap(args.tif, args.resolution)
+    heights, res_x, res_y, full_out_w, full_out_h = load_heightmap(
+        args.tif, args.resolution)
 
-    # Record full terrain extent before any crop so that all mesh outputs
-    # share a single coordinate frame centred on the full terrain's centre.
-    H_full, W_full = heights.shape
-    full_size_x = (W_full - 1) * res_x
-    full_size_y = (H_full - 1) * res_y
+    # Full terrain extents are always derived from the uncropped raster so that
+    # vertex world-positions and UV extents are consistent across all outputs.
+    full_size_x = (full_out_w - 1) * res_x
+    full_size_y = (full_out_h - 1) * res_y
     crop_c0 = crop_r0 = 0
 
     if args.crop and not args.invert_crop:
-        mn_x, _mx_x, _mn_y, mx_y = args.crop
-        crop_c0 = int(round(mn_x  * (W_full - 1)))
-        crop_r0 = int(round((1.0 - mx_y) * (H_full - 1)))
+        mn_x, _, _, mx_y = args.crop
+        crop_c0 = int(round(mn_x       * (full_out_w - 1)))
+        crop_r0 = int(round((1.0-mx_y) * (full_out_h - 1)))
         heights = crop_heightmap(heights, args.crop)
         print(f"  Cropped  : {heights.shape[1]}×{heights.shape[0]} px")
 

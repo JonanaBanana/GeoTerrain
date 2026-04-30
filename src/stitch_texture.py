@@ -58,45 +58,84 @@ def parse_tile_files(folder: Path):
 # MOSAIC BUILDER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_mosaic(tiles: dict, northings: list, eastings: list,
-                 tile_px_x: int, tile_px_y: int) -> np.ndarray:
+def _load_region(tiles: dict, northings: list, eastings: list,
+                 tile_px_x: int, tile_px_y: int,
+                 img_r0: int, img_c0: int, img_r1: int, img_c1: int,
+                 show_progress: bool = True) -> np.ndarray:
     """
-    Read and downsample each tile to (tile_px_y, tile_px_x) and assemble into
-    a single RGB uint8 array shaped (img_h, img_w, 3).
-
-    Image orientation (matching OBJ UV convention):
-        row 0   → northernmost tiles (highest northing)
-        col 0   → westernmost tiles  (lowest easting)
+    Load only the satellite tiles that overlap [img_r0:img_r1, img_c0:img_c1]
+    in full-mosaic pixel coordinates and return the exact cropped pixel region
+    as an RGB uint8 array.  This is the single source of truth for tile
+    selection and pixel arithmetic used by both build_mosaic and
+    save_tiled_png_lazy.
     """
     n_rows = len(northings)
     n_cols = len(eastings)
-    img_h  = tile_px_y * n_rows
-    img_w  = tile_px_x * n_cols
+    full_row_of = {n: i for i, n in enumerate(sorted(northings, reverse=True))}
+    full_col_of = {e: i for i, e in enumerate(sorted(eastings))}
 
-    # Row index: highest northing → row 0 (north is up in image → v flipped)
-    row_of = {n: i for i, n in enumerate(sorted(northings, reverse=True))}
-    col_of = {e: i for i, e in enumerate(sorted(eastings))}
+    col_t0 = img_c0 // tile_px_x;  col_t1 = min((img_c1 - 1) // tile_px_x, n_cols - 1)
+    row_t0 = img_r0 // tile_px_y;  row_t1 = min((img_r1 - 1) // tile_px_y, n_rows - 1)
 
-    mosaic = np.zeros((img_h, img_w, 3), dtype=np.uint8)
-    total  = len(tiles)
+    needed = {k: v for k, v in tiles.items()
+              if row_t0 <= full_row_of[k[0]] <= row_t1
+              and col_t0 <= full_col_of[k[1]] <= col_t1}
 
-    for idx, ((n_km, e_km), path) in enumerate(sorted(tiles.items()), 1):
-        print(f"  [{idx:3d}/{total}]  {path.name}", end="\r", flush=True)
+    sub_northings = sorted(set(k[0] for k in needed))
+    sub_eastings  = sorted(set(k[1] for k in needed))
+    row_of = {n: i for i, n in enumerate(sorted(sub_northings, reverse=True))}
+    col_of = {e: i for i, e in enumerate(sorted(sub_eastings))}
 
-        row = row_of[n_km]
-        col = col_of[e_km]
-        r0, r1 = row * tile_px_y, (row + 1) * tile_px_y
-        c0, c1 = col * tile_px_x, (col + 1) * tile_px_x
+    sub_h = tile_px_y * len(sub_northings)
+    sub_w = tile_px_x * len(sub_eastings)
+    sub   = np.zeros((sub_h, sub_w, 3), dtype=np.uint8)
+    total = len(needed)
 
+    for idx, ((n_km, e_km), path) in enumerate(sorted(needed.items()), 1):
+        if show_progress:
+            print(f"  [{idx:3d}/{total}]  {path.name}", end="\r", flush=True)
+        row = row_of[n_km];  col = col_of[e_km]
+        rt0, rt1 = row * tile_px_y, (row + 1) * tile_px_y
+        ct0, ct1 = col * tile_px_x, (col + 1) * tile_px_x
         with rasterio.open(path) as src:
-            # Read only RGB bands (1,2,3); ignore alpha band 4
             buf = np.empty((3, tile_px_y, tile_px_x), dtype=np.uint8)
             src.read([1, 2, 3], out=buf, resampling=Resampling.lanczos)
+        sub[rt0:rt1, ct0:ct1] = buf.transpose(1, 2, 0)
 
-        mosaic[r0:r1, c0:c1] = buf.transpose(1, 2, 0)
+    if show_progress:
+        print()
 
-    print()  # clear \r line
-    return mosaic
+    sc0 = img_c0 - col_t0 * tile_px_x;  sc1 = img_c1 - col_t0 * tile_px_x
+    sr0 = img_r0 - row_t0 * tile_px_y;  sr1 = img_r1 - row_t0 * tile_px_y
+    return sub[sr0:sr1, sc0:sc1]
+
+
+def build_mosaic(tiles: dict, northings: list, eastings: list,
+                 tile_px_x: int, tile_px_y: int,
+                 crop: tuple = None) -> np.ndarray:
+    """
+    Assemble satellite tiles into a single RGB uint8 array.
+    When crop is given, only the overlapping tiles are loaded and the result
+    is already cropped — pixel-identical to crop_mosaic(full_mosaic, crop).
+    Use save_tiled_png_lazy instead when --tiles > 1 to avoid a large
+    intermediate array.
+    """
+    n_rows = len(northings)
+    n_cols = len(eastings)
+    full_h = tile_px_y * n_rows
+    full_w = tile_px_x * n_cols
+
+    if crop is not None:
+        min_x, max_x, min_y, max_y = crop
+        c0 = int(round(min_x * full_w));         c1 = int(round(max_x * full_w))
+        r0 = int(round((1.0 - max_y) * full_h)); r1 = int(round((1.0 - min_y) * full_h))
+        c0, c1 = max(0, c0), min(full_w, c1)
+        r0, r1 = max(0, r0), min(full_h, r1)
+        return _load_region(tiles, northings, eastings, tile_px_x, tile_px_y,
+                            r0, c0, r1, c1)
+
+    return _load_region(tiles, northings, eastings, tile_px_x, tile_px_y,
+                        0, 0, full_h, full_w)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -212,6 +251,7 @@ def crop_mosaic(mosaic: np.ndarray, crop: tuple) -> np.ndarray:
 
 def save_png(mosaic: np.ndarray, out_path: Path):
     from PIL import Image
+    Image.MAX_IMAGE_PIXELS = None
     Image.fromarray(mosaic).save(out_path)
     size_mb = out_path.stat().st_size / 1_048_576
     print(f"  Texture  → {out_path}  "
@@ -227,6 +267,7 @@ def save_tiled_png(mosaic: np.ndarray, tex_dir: Path, n_tiles: int):
         col index increases rightward (eastward)
     """
     from PIL import Image
+    Image.MAX_IMAGE_PIXELS = None
 
     img    = Image.fromarray(mosaic)
     img_h, img_w = mosaic.shape[:2]
@@ -246,6 +287,60 @@ def save_tiled_png(mosaic: np.ndarray, tex_dir: Path, n_tiles: int):
             size_mb  = tile_path.stat().st_size / 1_048_576
             print(f"  [{idx:3d}/{total}] {tile_path.name}  "
                   f"({c1-c0}×{r1-r0} px, {size_mb:.1f} MB)")
+
+
+def save_tiled_png_lazy(tiles: dict, northings: list, eastings: list,
+                        tile_px: int, n_tiles: int, tex_dir: Path,
+                        crop: tuple = None):
+    """
+    Write n_tiles×n_tiles PNG files without ever building a full mosaic array.
+    Each output tile is loaded on demand via _load_region(), keeping peak memory
+    proportional to one output tile rather than the entire mosaic.
+    """
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = None
+
+    n_rows  = len(northings)
+    n_cols  = len(eastings)
+    full_h  = tile_px * n_rows
+    full_w  = tile_px * n_cols
+
+    if crop is not None:
+        min_x, max_x, min_y, max_y = crop
+        fc0 = int(round(min_x * full_w));         fc1 = int(round(max_x * full_w))
+        fr0 = int(round((1.0 - max_y) * full_h)); fr1 = int(round((1.0 - min_y) * full_h))
+        fc0, fc1 = max(0, fc0), min(full_w, fc1)
+        fr0, fr1 = max(0, fr0), min(full_h, fr1)
+    else:
+        fc0, fr0, fc1, fr1 = 0, 0, full_w, full_h
+
+    crop_w = fc1 - fc0
+    crop_h = fr1 - fr0
+
+    row_bounds = np.round(np.linspace(0, crop_h, n_tiles + 1)).astype(int)
+    col_bounds = np.round(np.linspace(0, crop_w, n_tiles + 1)).astype(int)
+
+    total = n_tiles * n_tiles
+    for ri in range(n_tiles):
+        for ci in range(n_tiles):
+            out_r0, out_r1 = row_bounds[ri], row_bounds[ri + 1]
+            out_c0, out_c1 = col_bounds[ci], col_bounds[ci + 1]
+            w = out_c1 - out_c0
+            h = out_r1 - out_r0
+            idx = ri * n_tiles + ci + 1
+            print(f"  [{idx:3d}/{total}] texture_tile_{ri:02d}_{ci:02d}.png  "
+                  f"({w}×{h} px) …", end="\r", flush=True)
+            region = _load_region(
+                tiles, northings, eastings, tile_px, tile_px,
+                fr0 + out_r0, fc0 + out_c0,
+                fr0 + out_r1, fc0 + out_c1,
+                show_progress=False,
+            )
+            tile_path = tex_dir / f"texture_tile_{ri:02d}_{ci:02d}.png"
+            Image.fromarray(region).save(tile_path)
+            size_mb = tile_path.stat().st_size / 1_048_576
+            print(f"  [{idx:3d}/{total}] texture_tile_{ri:02d}_{ci:02d}.png  "
+                  f"({w}×{h} px, {size_mb:.1f} MB)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -316,23 +411,24 @@ def main():
     print("  Saving metadata …")
     save_texture_metadata_csv(tiles, out_dir)
 
-    print("  Loading and downsampling tiles …")
-    mosaic = build_mosaic(tiles, northings, eastings, tile_px, tile_px)
-
-    if args.crop and not args.invert_crop:
-        mosaic = crop_mosaic(mosaic, args.crop)
-        print(f"  Cropped  : {mosaic.shape[1]}×{mosaic.shape[0]} px")
-
     if args.invert_crop:
+        print("  Loading and downsampling tiles …")
+        mosaic = build_mosaic(tiles, northings, eastings, tile_px, tile_px)
         strips = crop_mosaic_invert(mosaic, args.crop)
         print(f"  Outer    : {len(strips)} strip(s)")
         for label, strip in strips.items():
             save_png(strip, tex_dir / f"texture_outer_{label}.png")
     elif args.tiles == 1:
+        print("  Loading and downsampling tiles …")
+        mosaic = build_mosaic(tiles, northings, eastings, tile_px, tile_px,
+                              crop=args.crop or None)
+        if args.crop:
+            print(f"  Cropped  : {mosaic.shape[1]}×{mosaic.shape[0]} px")
         save_png(mosaic, tex_dir / "texture.png")
     else:
-        print(f"  Splitting into {args.tiles}×{args.tiles} texture tiles …")
-        save_tiled_png(mosaic, tex_dir, args.tiles)
+        print(f"  Processing {args.tiles}×{args.tiles} texture tiles …")
+        save_tiled_png_lazy(tiles, northings, eastings, tile_px,
+                            args.tiles, tex_dir, crop=args.crop or None)
 
     print("\nDone.")
 

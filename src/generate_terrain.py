@@ -1,9 +1,12 @@
 """
 Generate terrain mesh (OBJ) and satellite texture (PNG) in one command.
 
+Point at a tile folder produced by download_terrain.py.  The script
+auto-discovers the elevation TIF from  surface_model/  or  terrain_model/
+and the satellite images from  satellite_images/.
+
 Shared parameters (--out, --crop, --invert-crop, --tiles) are forwarded to
-both tif_to_obj.py and stitch_texture.py automatically, so inner/outer crop
-pairs are always consistent.
+both tif_to_obj.py and stitch_texture.py automatically.
 
 Outputs are written under  outputs/<name>/
     outputs/<name>/meshes/    ← from tif_to_obj
@@ -11,13 +14,9 @@ Outputs are written under  outputs/<name>/
 
 Usage
 -----
-python3 src/generate_terrain.py inputs/DSM.tif inputs/satellite/ --out myterrain
-python3 src/generate_terrain.py inputs/DSM.tif inputs/satellite/ --out myterrain \\
-    --resolution 5 --size 8192 --tiles 4
-python3 src/generate_terrain.py inputs/DSM.tif inputs/satellite/ --out myterrain_center \\
-    --crop 0.3 0.7 0.3 0.7
-python3 src/generate_terrain.py inputs/DSM.tif inputs/satellite/ --out myterrain_outer \\
-    --crop 0.3 0.7 0.3 0.7 --invert-crop
+python3 src/generate_terrain.py inputs/tile_623_57 --out 623_57
+python3 src/generate_terrain.py inputs/tile_623_57 --out 623_57 --resolution 2 --size 16000
+python3 src/generate_terrain.py inputs/tile_623_57 --out 623_57_crop --crop 0.3 0.7 0.3 0.7
 """
 
 import argparse
@@ -35,9 +34,9 @@ def parse_args():
         description="Generate terrain OBJ mesh and satellite texture PNG together",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("tif",       help="Input GeoTIFF DSM/DEM")
-    p.add_argument("satellite", help="Folder containing 1 km×1 km satellite TIFs")
-    p.add_argument("--out",     required=True,
+    p.add_argument("tile",  help="Tile folder (e.g. inputs/tile_623_57) containing "
+                                 "surface_model/ or terrain_model/ and satellite_images/")
+    p.add_argument("--out", required=True,
                    help="Output folder name under outputs/")
 
     # ── Shared ────────────────────────────────────────────────────────────────
@@ -67,21 +66,35 @@ def parse_args():
     return args
 
 
-def _validate(args, p):
-    # ── Input paths ───────────────────────────────────────────────────────────
-    tif = Path(args.tif)
-    if not tif.exists():
-        p.error(f"TIF file not found: {args.tif}")
-    if not tif.is_file():
-        p.error(f"TIF path is not a file: {args.tif}")
-    if tif.suffix.lower() not in (".tif", ".tiff"):
-        p.error(f"TIF file must have a .tif or .tiff extension: {args.tif}")
+def _resolve_tile_folder(tile_dir: Path, p):
+    """
+    Discover the elevation TIF and satellite folder inside a tile directory.
+    Sets args.tif and args.satellite, or calls p.error() with a clear message.
+    """
+    if not tile_dir.exists():
+        p.error(f"Tile folder not found: {tile_dir}")
+    if not tile_dir.is_dir():
+        p.error(f"Tile path is not a directory: {tile_dir}")
 
-    sat = Path(args.satellite)
-    if not sat.exists():
-        p.error(f"Satellite folder not found: {args.satellite}")
+    sat = tile_dir / "satellite_images"
     if not sat.is_dir():
-        p.error(f"Satellite path is not a directory: {args.satellite}")
+        p.error(f"satellite_images/ not found in {tile_dir}")
+
+    tifs = list((tile_dir / "surface_model").glob("*.tif"))
+
+    if not tifs:
+        p.error(f"No .tif file found in surface_model/ under {tile_dir}")
+    if len(tifs) > 1:
+        names = ", ".join(t.name for t in sorted(tifs))
+        p.error(f"Multiple TIF files found in {tile_dir / 'surface_model'}: {names}\n"
+                f"  Remove or move the unwanted file so only one remains.")
+
+    return str(tifs[0]), str(sat)
+
+
+def _validate(args, p):
+    # ── Resolve tile folder into tif + satellite paths ────────────────────────
+    args.tif, args.satellite = _resolve_tile_folder(Path(args.tile), p)
 
     # ── Numeric ranges ────────────────────────────────────────────────────────
     if args.resolution <= 0:
@@ -172,7 +185,8 @@ def main():
     args = parse_args()
 
     print(f"\nTerrain generator")
-    print(f"  Mesh      : {args.tif}  ({args.resolution} m/px)")
+    print(f"  Tile      : {args.tile}")
+    print(f"  Elevation : {args.tif}  ({args.resolution} m/px)")
     print(f"  Texture   : {args.satellite}  ({args.size} px max)")
     print(f"  Output    : outputs/{args.out}/")
     print(f"  Tiles     : {args.tiles}×{args.tiles}")
