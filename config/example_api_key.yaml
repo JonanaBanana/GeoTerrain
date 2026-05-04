@@ -1,0 +1,3 @@
+#Copy this file to config/api_key.yaml and fill in your API key.
+#YOUR API KEY GOES HERE
+api_key: xxxx
