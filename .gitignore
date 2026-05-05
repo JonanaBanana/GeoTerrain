@@ -9,6 +9,8 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+config/*
+!config/example_api_key.yaml
 
 # OS
 .DS_Store
