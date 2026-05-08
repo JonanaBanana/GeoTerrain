@@ -10,6 +10,7 @@ Usage
 python3 src/download_terrain.py
 """
 
+import os
 import re
 import sys
 import tempfile
@@ -37,15 +38,26 @@ BASE_URL = "https://api.datafordeler.dk/FileDownloads"
 
 def load_api_key() -> str:
     if not CONF.exists():
-        sys.exit(
-            f"Config file not found: {CONF}\n"
-            f"Create it with:\n  api_key: YOUR_KEY_HERE"
-        )
+        example = ROOT / "config" / "example_api_key.yaml"
+        print(f"API key config not found: {CONF}")
+        print()
+        if example.exists():
+            print(f"  1. Copy the example:  cp {example} {CONF}")
+        else:
+            print(f"  1. Create {CONF} with the contents:")
+            print(f"       api_key: YOUR_KEY_HERE")
+        print(f"  2. Open {CONF} and replace the placeholder with your real API key.")
+        print(f"     Get a key at: https://datafordeler.dk")
+        sys.exit(1)
+
     with open(CONF) as f:
         cfg = yaml.safe_load(f)
     key = (cfg or {}).get("api_key", "").strip()
-    if not key or key == "YOUR_API_KEY_HERE":
-        sys.exit(f"Set a real api_key value in {CONF}")
+    if not key or key.lower() in ("your_api_key_here", "xxxx"):
+        print(f"Placeholder API key detected in {CONF}")
+        print(f"  Open {CONF} and replace the 'api_key' value with your real key.")
+        print(f"  Get a key at: https://datafordeler.dk")
+        sys.exit(1)
     return key
 
 
@@ -173,7 +185,9 @@ def download_satellite(n: int, e: int, key: str):
         print(f"  (size query failed: {exc})")
 
     print("\nDownloading satellite tiles …")
-    tmp_path = Path(tempfile.mktemp(suffix=".zip"))
+    fd, tmp_name = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
     try:
         with requests.get(sat_url(n, e, key), stream=True, timeout=120) as r:
             r.raise_for_status()
@@ -278,7 +292,7 @@ def verify_satellite_tiles(n: int, e: int) -> bool:
     failed: list[tuple[str, str]] = []
     for i, path in enumerate(tifs, 1):
         print(f"  [{i:3d}/{total}] {path.name}", end="\r", flush=True)
-        ok, msg = verify_raster(path, expected_epsg=25832, expected_res_m=0.125)
+        ok, msg = verify_raster(path, expected_bands=3, expected_epsg=25832, expected_res_m=0.125)
         if not ok:
             failed.append((path.name, msg))
 

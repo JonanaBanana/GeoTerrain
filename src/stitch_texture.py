@@ -223,28 +223,6 @@ def crop_mosaic_invert(mosaic: np.ndarray, crop: tuple) -> dict:
     return strips
 
 
-def crop_mosaic(mosaic: np.ndarray, crop: tuple) -> np.ndarray:
-    """
-    Crop the mosaic to the same percentage bounding box used by tif_to_obj --crop.
-
-    crop = (min_x, max_x, min_y, max_y) as fractions 0..1:
-        X: 0 = west edge,  1 = east edge  (columns)
-        Y: 0 = south edge, 1 = north edge (rows, inverted vs image axis)
-    """
-    min_x, max_x, min_y, max_y = crop
-    H, W = mosaic.shape[:2]
-
-    c0 = int(round(min_x * W))
-    c1 = int(round(max_x * W))
-    # Image row 0 = north → invert Y
-    r0 = int(round((1.0 - max_y) * H))
-    r1 = int(round((1.0 - min_y) * H))
-
-    c0, c1 = max(0, c0), min(W, c1)
-    r0, r1 = max(0, r0), min(H, r1)
-    return mosaic[r0:r1, c0:c1]
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # EXPORT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -256,37 +234,6 @@ def save_png(mosaic: np.ndarray, out_path: Path):
     size_mb = out_path.stat().st_size / 1_048_576
     print(f"  Texture  → {out_path}  "
           f"({mosaic.shape[1]}×{mosaic.shape[0]} px, {size_mb:.1f} MB)")
-
-
-def save_tiled_png(mosaic: np.ndarray, tex_dir: Path, n_tiles: int):
-    """
-    Split the mosaic into an n_tiles × n_tiles grid of PNG files whose naming
-    matches the OBJ tiles produced by tif_to_obj.py --tiles N:
-        tile_00_00 = top-left  (north-west)
-        row index increases downward (southward)
-        col index increases rightward (eastward)
-    """
-    from PIL import Image
-    Image.MAX_IMAGE_PIXELS = None
-
-    img    = Image.fromarray(mosaic)
-    img_h, img_w = mosaic.shape[:2]
-
-    row_bounds = np.round(np.linspace(0, img_h, n_tiles + 1)).astype(int)
-    col_bounds = np.round(np.linspace(0, img_w, n_tiles + 1)).astype(int)
-
-    total = n_tiles * n_tiles
-    for ri in range(n_tiles):
-        for ci in range(n_tiles):
-            r0, r1 = row_bounds[ri], row_bounds[ri + 1]
-            c0, c1 = col_bounds[ci], col_bounds[ci + 1]
-            tile_img  = img.crop((c0, r0, c1, r1))
-            tile_path = tex_dir / f"texture_tile_{ri:02d}_{ci:02d}.png"
-            tile_img.save(tile_path)
-            idx      = ri * n_tiles + ci + 1
-            size_mb  = tile_path.stat().st_size / 1_048_576
-            print(f"  [{idx:3d}/{total}] {tile_path.name}  "
-                  f"({c1-c0}×{r1-r0} px, {size_mb:.1f} MB)")
 
 
 def save_tiled_png_lazy(tiles: dict, northings: list, eastings: list,
@@ -378,8 +325,26 @@ def parse_args():
                    help="Export the 4 outer texture strips surrounding --crop instead "
                         "of the inner region (requires --crop)")
     args = p.parse_args()
+
+    if not Path(args.folder).is_dir():
+        p.error(f"folder not found or not a directory: {args.folder}")
+    if args.size < 2:
+        p.error(f"--size must be >= 2, got {args.size}")
+    if args.tiles < 1:
+        p.error(f"--tiles must be >= 1, got {args.tiles}")
     if args.invert_crop and not args.crop:
         p.error("--invert-crop requires --crop")
+    if args.crop:
+        mn_x, mx_x, mn_y, mx_y = args.crop
+        for name, val in [("MIN_X", mn_x), ("MAX_X", mx_x),
+                          ("MIN_Y", mn_y), ("MAX_Y", mx_y)]:
+            if not (0.0 <= val <= 1.0):
+                p.error(f"--crop {name} must be in [0, 1], got {val}")
+        if mn_x >= mx_x:
+            p.error(f"--crop MIN_X ({mn_x}) must be less than MAX_X ({mx_x})")
+        if mn_y >= mx_y:
+            p.error(f"--crop MIN_Y ({mn_y}) must be less than MAX_Y ({mx_y})")
+
     return args
 
 
@@ -396,6 +361,17 @@ def main():
     print(f"  Grid     : {n_cols} × {n_rows}  "
           f"(E {eastings[0]}–{eastings[-1]}, N {northings[0]}–{northings[-1]})")
     print(f"  Tiles    : {len(tiles)}")
+
+    # Cap --size at the native satellite resolution so we never upsample.
+    sample_path = next(iter(sorted(tiles.values())))
+    with rasterio.open(sample_path) as src:
+        native_tile_px = max(src.width, src.height)
+    native_max_size = native_tile_px * max(n_rows, n_cols)
+    if args.size > native_max_size:
+        print(f"  Warning  : --size {args.size} exceeds native resolution "
+              f"({native_max_size} px = {native_tile_px} px × {max(n_rows, n_cols)} tiles) "
+              f"— clamped to {native_max_size}")
+        args.size = native_max_size
 
     tile_px = max(1, args.size // max(n_rows, n_cols))
     img_w   = tile_px * n_cols

@@ -2,7 +2,7 @@
 Generate terrain mesh (OBJ) and satellite texture (PNG) in one command.
 
 Point at a tile folder produced by download_terrain.py.  The script
-auto-discovers the elevation TIF from  surface_model/  or  terrain_model/
+auto-discovers the elevation TIF from  surface_model/
 and the satellite images from  satellite_images/.
 
 Shared parameters (--out, --crop, --invert-crop, --tiles) are forwarded to
@@ -80,7 +80,11 @@ def _resolve_tile_folder(tile_dir: Path, p):
     if not sat.is_dir():
         p.error(f"satellite_images/ not found in {tile_dir}")
 
-    tifs = list((tile_dir / "surface_model").glob("*.tif"))
+    sm_dir = tile_dir / "surface_model"
+    if not sm_dir.is_dir():
+        p.error(f"surface_model/ not found in {tile_dir}  (have you downloaded the DSM?)")
+
+    tifs = list(sm_dir.glob("*.tif"))
 
     if not tifs:
         p.error(f"No .tif file found in surface_model/ under {tile_dir}")

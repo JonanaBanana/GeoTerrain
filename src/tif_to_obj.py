@@ -457,8 +457,39 @@ def parse_args():
     p.add_argument("--workers",     type=int, default=os.cpu_count(),
                    help="Parallel workers for OBJ export (default: all CPU cores)")
     args = p.parse_args()
+
+    if not Path(args.tif).is_file():
+        p.error(f"TIF file not found: {args.tif}")
+    if args.resolution <= 0:
+        p.error(f"--resolution must be > 0, got {args.resolution}")
+    try:
+        with rasterio.open(args.tif) as src:
+            native_res = min(src.res)
+        if args.resolution < native_res:
+            p.error(
+                f"--resolution {args.resolution} m is finer than the TIF's native "
+                f"resolution ({native_res:.4g} m/px) — upsampling adds no detail. "
+                f"Use --resolution >= {native_res:.4g}"
+            )
+    except rasterio.errors.RasterioIOError:
+        pass  # unreadable TIF — main() will report a clearer error
+    if args.tiles < 1:
+        p.error(f"--tiles must be >= 1, got {args.tiles}")
+    if args.workers is not None and args.workers < 1:
+        p.error(f"--workers must be >= 1, got {args.workers}")
     if args.invert_crop and not args.crop:
         p.error("--invert-crop requires --crop")
+    if args.crop:
+        mn_x, mx_x, mn_y, mx_y = args.crop
+        for name, val in [("MIN_X", mn_x), ("MAX_X", mx_x),
+                          ("MIN_Y", mn_y), ("MAX_Y", mx_y)]:
+            if not (0.0 <= val <= 1.0):
+                p.error(f"--crop {name} must be in [0, 1], got {val}")
+        if mn_x >= mx_x:
+            p.error(f"--crop MIN_X ({mn_x}) must be less than MAX_X ({mx_x})")
+        if mn_y >= mx_y:
+            p.error(f"--crop MIN_Y ({mn_y}) must be less than MAX_Y ({mx_y})")
+
     return args
 
 
