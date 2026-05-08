@@ -52,14 +52,19 @@ def parse_args():
                         "inner region (requires --crop)")
 
     # ── Mesh only (tif_to_obj) ─────────────────────────────────────────────
-    p.add_argument("--resolution", type=float, default=10.0,
-                   help="Mesh vertex spacing in metres")
+    p.add_argument("--resolution", type=float, default=2.0,
+                   help="Mesh vertex spacing in metres. "
+                        "Recommended: 2.0 for a high-detail mission area (--crop), "
+                        "5.0 for the surrounding outer region (--invert-crop)")
     p.add_argument("--workers", type=int, default=None,
                    help="Parallel workers for OBJ export (default: all CPU cores)")
 
     # ── Texture only (stitch_texture) ──────────────────────────────────────
-    p.add_argument("--size", type=int, default=4096,
-                   help="Target texture long-edge size in pixels")
+    p.add_argument("--size", type=int, default=16000,
+                   help="Target texture long-edge size in pixels (capped at native satellite "
+                        "resolution). Recommended: 80000 for a high-detail mission area "
+                        "(--crop, native resolution), 20000 for the surrounding outer region "
+                        "(--invert-crop)")
 
     args = p.parse_args()
     _validate(args, p)

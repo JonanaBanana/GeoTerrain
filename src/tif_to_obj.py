@@ -440,8 +440,10 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("tif",           help="Input GeoTIFF file")
-    p.add_argument("--resolution",  type=float, default=10.0,
-                   help="Target vertex spacing in metres")
+    p.add_argument("--resolution",  type=float, default=2.0,
+                   help="Target vertex spacing in metres. "
+                        "Recommended: 2.0 for a high-detail mission area (--crop), "
+                        "5.0 for the surrounding outer region (--invert-crop)")
     p.add_argument("--tiles",       type=int,   default=1,
                    help="Split into N×N tiles (1 = single mesh)")
     p.add_argument("--out",         default=None,

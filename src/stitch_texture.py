@@ -310,8 +310,11 @@ def parse_args():
     p.add_argument("folder", help="Folder containing 1 km×1 km tile TIFs")
     p.add_argument("--out",  default=None,
                    help="Output name under outputs/ (default: satellite folder name)")
-    p.add_argument("--size",  type=int, default=4096,
-                   help="Target texture width in pixels (height scaled to match grid aspect)")
+    p.add_argument("--size",  type=int, default=16000,
+                   help="Target texture long-edge size in pixels (capped at native satellite "
+                        "resolution). Recommended: 80000 for a high-detail mission area "
+                        "(--crop, native resolution), 20000 for the surrounding outer region "
+                        "(--invert-crop)")
     p.add_argument("--tiles", type=int, default=1,
                    help="Split output into N×N texture tiles matching tif_to_obj --tiles N "
                         "(1 = single texture)")

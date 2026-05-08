@@ -121,27 +121,31 @@ The main entry point. Points at a tile folder and runs both `tif_to_obj.py` and 
 python3 src/generate_terrain.py inputs/tile_N_E --out N_E
 ```
 
-**Common usage:**
+**Recommended two-tier workflow for Isaac Sim:**
+
+The typical setup is a high-resolution inner mission area surrounded by a lower-resolution outer context ring. Run `generate_terrain.py` twice with the same `--crop` bounds:
 
 ```bash
-# Full tile, 10 m mesh resolution, 4096 px texture
+# Step 1 — high-resolution mission area (native satellite resolution, 2 m mesh)
+python3 src/generate_terrain.py inputs/tile_N_E --out N_E_inner \
+    --crop 0.3 0.7 0.3 0.7 \
+    --resolution 2 --size 80000 --tiles 4
+
+# Step 2 — lower-resolution outer context ring (1/4 resolution, 5 m mesh)
+python3 src/generate_terrain.py inputs/tile_N_E --out N_E_outer \
+    --crop 0.3 0.7 0.3 0.7 --invert-crop \
+    --resolution 5 --size 20000
+```
+
+**Other common usage:**
+
+```bash
+# Quick preview of a full tile at default settings (2 m mesh, 16000 px texture)
 python3 src/generate_terrain.py inputs/tile_N_E --out N_E
 
-# Higher resolution mesh, larger texture
-python3 src/generate_terrain.py inputs/tile_N_E --out N_E \
-    --resolution 2 --size 16000
-
-# Crop to centre 40% of the tile (both axes)
-python3 src/generate_terrain.py inputs/tile_N_E --out N_E_center \
-    --crop 0.3 0.7 0.3 0.7
-
-# Split output into a 4×4 grid of mesh tiles + matching texture tiles
-python3 src/generate_terrain.py inputs/tile_N_E --out N_E \
-    --tiles 4 --resolution 2 --size 16000
-
-# Export the outer ring surrounding a cropped inner area
-python3 src/generate_terrain.py inputs/tile_N_E --out N_E_outer \
-    --crop 0.3 0.7 0.3 0.7 --invert-crop
+# Split the inner mesh into a 4×4 tile grid (reduces per-file size for Isaac Sim)
+python3 src/generate_terrain.py inputs/tile_N_E --out N_E_inner \
+    --crop 0.3 0.7 0.3 0.7 --resolution 2 --size 80000 --tiles 4
 ```
 
 **Arguments:**
@@ -216,14 +220,14 @@ As long as `--crop` and `--tiles` values are identical between `tif_to_obj.py` a
 
 ## Use cases
 
-| Goal | Command sketch |
+| Goal | Key arguments |
 |---|---|
-| Full 10×10 km tile, fast preview | `generate_terrain.py … --resolution 10 --size 4096` |
-| Full tile, high detail for Isaac Sim | `generate_terrain.py … --resolution 2 --size 16000 --tiles 4` |
-| Zoom into a specific sub-region | `generate_terrain.py … --crop 0.3 0.7 0.4 0.8 --resolution 2` |
-| Inner region + outer context ring | Run once with `--crop`, once with `--crop --invert-crop` |
-| Texture only (mesh already done) | `stitch_texture.py … --size 8192 --tiles 4` |
-| Inspect what data a tile contains | Run `download_terrain.py` and choose verification only (skip download) |
+| High-res mission area (inner crop) | `--crop … --resolution 2 --size 80000 --tiles 4` |
+| Low-res outer context ring | `--crop … --invert-crop --resolution 5 --size 20000` |
+| Quick full-tile preview | `--resolution 2 --size 16000` (defaults) |
+| Texture only (mesh already done) | `stitch_texture.py … --size 80000 --tiles 4` |
+
+The `--size 80000` value corresponds to native satellite resolution (8000 px per 1 km tile × 10 tiles). The `--size 20000` outer ring is ¼ of that in each axis, which keeps Isaac Sim within comfortable import limits.
 
 ---
 
