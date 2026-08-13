@@ -1,3 +1,8 @@
-#Copy this file to config/api_key.yaml and fill in your API key.
-#YOUR API KEY GOES HERE
+# Copy this file to config/api_key.yaml and fill in your keys.
+
+# datafordeler.dk API key (used by download_terrain.py)
 api_key: xxxx
+
+# dataforsyningen.dk token (used by download_orto_forsyningen.py)
+# Get a free token at https://dataforsyningen.dk
+forsyningen_token: xxxx
