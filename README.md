@@ -33,6 +33,13 @@ cp config/example_api_key.yaml config/api_key.yaml
 # then edit config/api_key.yaml and replace xxxx with your real key
 ```
 
+`config/api_key.yaml` holds two independent keys, one per download script:
+
+- `api_key` — datafordeler.dk key, used by `download_terrain.py`
+- `forsyningen_token` — dataforsyningen.dk token, used by `download_orto_forsyningen.py` (see below)
+
+You only need to fill in the key(s) for the script(s) you plan to use.
+
 ---
 
 ## Coordinate system and tile indexing
@@ -57,8 +64,12 @@ inputs/
       DSM_10km_623_57.tif   ← used by this pipeline for mesh generation
     terrain_model/          ← DTM (Digital Terrain Model — bare ground, no buildings)
       DTM_10km_623_57.tif   ← NOT used by this pipeline; download only if needed elsewhere
-    satellite_images/       ← 100× 1km×1km GeoTIFF tiles at 12.5 cm/px
+    satellite_images/       ← 100× 1km×1km GeoTIFF tiles at 12.5 cm/px (from download_terrain.py)
       *.tif
+    satellite_forsyningen/  ← alternative multi-year satellite source (from download_orto_forsyningen.py)
+      <year>/
+        *.tif
+        metadata.csv
 
 outputs/
   <name>/
@@ -110,6 +121,49 @@ python3 src/download_terrain.py
 > **For terrain + texture generation, download DSM and Satellite only (choice 5).** The DTM (bare-ground model) is not used anywhere in this pipeline — download it only if another application requires it.
 
 > **Sea tiles:** If the tile boundary overlaps the sea or the dataset edge, fewer than 100 satellite tiles are returned. The script warns you and asks whether to extract anyway — this is expected behaviour for coastal tiles.
+
+---
+
+### `src/download_orto_forsyningen.py` — Download orthophoto imagery (alternative satellite source, multi-year)
+
+Non-interactive CLI. Fetches orthophoto imagery from the dataforsyningen.dk WMS API as an alternative to the satellite imagery in `download_terrain.py`, with support for downloading multiple years of coverage.
+
+```bash
+python3 src/download_orto_forsyningen.py --tile 623,57
+python3 src/download_orto_forsyningen.py --tile 623,57 --years 2024 2023
+python3 src/download_orto_forsyningen.py --tile 623,57 --workers 8
+python3 src/download_orto_forsyningen.py --tile 623,57 --force
+```
+
+**What it does:**
+
+1. Reads `forsyningen_token` from `config/api_key.yaml` (separate token from the `api_key` used by `download_terrain.py` — see below)
+2. Fetches a 10×10 km tile as 100 × 1×1 km² GeoTIFF subtiles at native 12.5 cm/px resolution, one WMS request per subtile (split into smaller chunked requests internally to avoid server timeouts)
+3. Writes each subtile as a georeferenced GeoTIFF (EPSG:25832) into `inputs/tile_N_E/satellite_forsyningen/<year>/`, alongside a `metadata.csv`
+4. Skips subtiles already present on disk unless `--force` is passed; retries failed tiles safely on re-run
+
+**Arguments:**
+
+| Argument | Default | Description |
+|---|---|---|
+| `--tile` | required | Tile index `N,E` or UTM lower-left, e.g. `623,57` or `6230000 570000` |
+| `--years` | all available (2021–2025) | One or more years to download, e.g. `--years 2024 2023` |
+| `--workers` | `4` | Concurrent download threads |
+| `--force` | — | Re-download tiles that already exist on disk |
+
+**Token setup:** add a `forsyningen_token` entry to `config/api_key.yaml` (separate from the `api_key` field used by `download_terrain.py`):
+
+```yaml
+forsyningen_token: xxxx
+```
+
+Get a free token at [dataforsyningen.dk](https://dataforsyningen.dk).
+
+Each year folder produced is a drop-in input for `stitch_texture.py`:
+
+```bash
+python3 src/stitch_texture.py inputs/tile_623_57/satellite_forsyningen/2024 --out 623_57_2024
+```
 
 ---
 
