@@ -14,9 +14,15 @@ A single convenience script (`generate_terrain.py`) runs stages 2 and 3 together
 
 ## Requirements
 
+Create a virtual environment and install dependencies into it, so nothing is installed into your system Python:
+
+```bash
+python3 -m venv .venv --prompt geoterrain
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
-pip install rasterio numpy scipy pillow requests pyyaml
-```
+
+Activate the venv (`source .venv/bin/activate`) in every new shell before running any of the scripts below.
 
 ---
 

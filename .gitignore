@@ -11,6 +11,8 @@ __pycache__/
 .pytest_cache/
 config/*
 !config/example_api_key.yaml
+.venv/
+venv/
 
 # OS
 .DS_Store

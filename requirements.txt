@@ -1,0 +1,6 @@
+rasterio
+numpy
+scipy
+pillow
+requests
+pyyaml
