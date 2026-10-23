@@ -1,8 +1,8 @@
 """
 Download orthophoto imagery from dataforsyningen.dk WMS API.
 
-Fetches a 10×10 km tile as 100 × 1×1 km² GeoTIFF subtiles at native 12.5 cm/px
-resolution.  Each subtile is saved as a georeferenced GeoTIFF (EPSG:25832)
+Fetches a 10×10 km tile as 100 × 1×1 km² GeoTIFF subtiles, by default at the
+native 12.5 cm/px resolution (coarser via --gsd).  Each subtile is saved as a georeferenced GeoTIFF (EPSG:25832)
 so it can be used directly with stitch_texture.py.
 
 Config
@@ -29,6 +29,7 @@ Usage
 python3 src/download_orto_forsyningen.py --tile 623,57
 python3 src/download_orto_forsyningen.py --tile 623,57 --years 2024 2023
 python3 src/download_orto_forsyningen.py --tile 623,57 --workers 8
+python3 src/download_orto_forsyningen.py --tile 623,57 --gsd 0.25
 python3 src/download_orto_forsyningen.py --tile 623,57 --force
 """
 
@@ -58,16 +59,17 @@ INPUTS          = ROOT / "inputs"
 
 WMS_ENDPOINT    = "https://api.dataforsyningen.dk/orto_foraar_DAF"
 TILE_SIZE_M     = 1_000          # metres per subtile side
-PIXELS_PER_TILE = 4_000          # → 0.125 m/px  (12.5 cm native resolution)
-GSD_M           = TILE_SIZE_M / PIXELS_PER_TILE   # 0.125
 SUBTILE_GRID    = 10             # 10×10 subtiles per 10 km tile
 
-# Each 1 km subtile is split into CHUNK_GRID×CHUNK_GRID WMS requests to keep
-# individual image dimensions small enough to avoid server-side gateway timeouts.
-# 4×4 → sixteen 2000×2000 px requests of 250 m × 250 m each.
-CHUNK_GRID      = 4
-CHUNK_SIZE_M    = TILE_SIZE_M    // CHUNK_GRID   # 250 m per chunk
-CHUNK_PX        = PIXELS_PER_TILE // CHUNK_GRID  # 2000 px per chunk
+# Selectable output resolutions (m/px).  0.125 is the native 12.5 cm GSD;
+# coarser values are resampled server-side by the WMS.
+GSD_CHOICES     = [0.125, 0.25, 0.5, 1.0]   # → 8000 / 4000 / 2000 / 1000 px per 1 km tile
+DEFAULT_GSD     = 0.125
+
+# Each 1 km subtile is split into a grid of CHUNK_PX×CHUNK_PX WMS requests to
+# keep individual image dimensions small enough to avoid server-side gateway
+# timeouts.  At 0.125 m/px this is 8×8 = sixty-four 125 m × 125 m requests.
+CHUNK_PX        = 1_000
 
 # Available orthophoto years on dataforsyningen.dk (geodanmark series).
 # Extend this list as new years become available.
@@ -100,6 +102,19 @@ def load_token() -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # WMS URL CONSTRUCTION
 # ══════════════════════════════════════════════════════════════════════════════
+
+_SECRET_PARAM = re.compile(r"((?:apiKey|token)=)[^&\s'\"]+", re.IGNORECASE)
+
+
+def redact(text: str) -> str:
+    """Mask apiKey/token query values so error messages never print the token."""
+    return _SECRET_PARAM.sub(r"\1***", text)
+
+
+def pixels_for_gsd(gsd_m: float) -> int:
+    """Pixels per 1 km subtile side for a given ground sample distance."""
+    return round(TILE_SIZE_M / gsd_m)
+
 
 def layer_name(year: int) -> str:
     return f"geodanmark_{year}_12_5cm"
@@ -161,13 +176,14 @@ def download_subtile(
     year: int,
     token: str,
     out_path: Path,
+    gsd_m: float,
 ) -> dict:
     """
     Download one 1 km² subtile from the WMS and write it as a GeoTIFF.
 
-    The 1 km tile is fetched as a CHUNK_GRID×CHUNK_GRID grid of smaller WMS
-    requests (currently 4×4 = sixteen 250 m × 2000 px chunks) and stitched
-    into the final PIXELS_PER_TILE×PIXELS_PER_TILE array before writing.
+    The 1 km tile is fetched as a chunk_grid×chunk_grid grid of CHUNK_PX
+    WMS requests (8×8 = sixty-four 125 m chunks at 0.125 m/px) and stitched
+    into the final pixels_per_tile×pixels_per_tile array before writing.
     This keeps individual requests small enough to avoid server-side gateway
     timeouts that occur with a single large 8000×8000 px request.
 
@@ -184,15 +200,19 @@ def download_subtile(
     east  = west  + TILE_SIZE_M
     north = south + TILE_SIZE_M
 
-    # Fetch CHUNK_GRID×CHUNK_GRID chunks and stitch into one array.
+    pixels_per_tile = pixels_for_gsd(gsd_m)
+    chunk_grid      = pixels_per_tile // CHUNK_PX
+    chunk_size_m    = TILE_SIZE_M // chunk_grid
+
+    # Fetch chunk_grid×chunk_grid chunks and stitch into one array.
     # Row 0 in the image is the northernmost strip; ri=0 → top of tile.
-    full = np.zeros((PIXELS_PER_TILE, PIXELS_PER_TILE, 3), dtype=np.uint8)
-    for ri in range(CHUNK_GRID):
-        for ci in range(CHUNK_GRID):
-            c_west  = west  + ci * CHUNK_SIZE_M
-            c_east  = c_west + CHUNK_SIZE_M
-            c_north = north - ri * CHUNK_SIZE_M
-            c_south = c_north - CHUNK_SIZE_M
+    full = np.zeros((pixels_per_tile, pixels_per_tile, 3), dtype=np.uint8)
+    for ri in range(chunk_grid):
+        for ci in range(chunk_grid):
+            c_west  = west  + ci * chunk_size_m
+            c_east  = c_west + chunk_size_m
+            c_north = north - ri * chunk_size_m
+            c_south = c_north - chunk_size_m
             url = build_wms_url(
                 c_west, c_south, c_east, c_north,
                 CHUNK_PX, CHUNK_PX,
@@ -209,10 +229,10 @@ def download_subtile(
             c0 = ci * CHUNK_PX
             full[r0:r0 + CHUNK_PX, c0:c0 + CHUNK_PX] = chunk
 
-    H, W = full.shape[:2]   # PIXELS_PER_TILE × PIXELS_PER_TILE
+    H, W = full.shape[:2]   # pixels_per_tile × pixels_per_tile
 
     # from_bounds builds a north-up transform: origin at (west, north),
-    # pixel_width=+GSD_M, pixel_height=-GSD_M.
+    # pixel_width=+gsd_m, pixel_height=-gsd_m.
     transform = from_bounds(west, south, east, north, W, H)
     crs       = CRS.from_epsg(25832)
 
@@ -238,7 +258,7 @@ def download_subtile(
             dst.update_tags(
                 YEAR           = str(year),
                 LAYER          = layer_name(year),
-                GSD_M          = str(GSD_M),
+                GSD_M          = str(gsd_m),
                 SOURCE         = "dataforsyningen.dk",
                 DOWNLOADED_UTC = datetime.now(timezone.utc).isoformat(),
             )
@@ -260,7 +280,7 @@ def download_subtile(
         "crs_epsg":       25832,
         "width_px":       W,
         "height_px":      H,
-        "gsd_m":          GSD_M,
+        "gsd_m":          gsd_m,
         "layer":          layer_name(year),
         "size_mb":        round(size_mb, 2),
         "downloaded_utc": datetime.now(timezone.utc).isoformat(),
@@ -310,6 +330,18 @@ def update_metadata_csv(year_dir: Path, new_rows: list[dict]):
 # YEAR ORCHESTRATION
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _is_complete(path: Path, pixels_per_tile: int) -> bool:
+    """True if path is a readable GeoTIFF at the requested pixels_per_tile size.
+    Files from a download at a different resolution are treated as missing."""
+    if not path.exists() or path.stat().st_size <= 10_000:
+        return False
+    try:
+        with rasterio.open(path) as src:
+            return (src.width, src.height) == (pixels_per_tile, pixels_per_tile)
+    except rasterio.errors.RasterioIOError:
+        return False
+
+
 def download_year(
     n: int,
     e: int,
@@ -317,6 +349,7 @@ def download_year(
     token: str,
     force: bool,
     n_workers: int,
+    gsd_m: float,
 ) -> tuple[int, int, int]:
     """
     Download all 100 subtiles for one tile+year.
@@ -336,7 +369,7 @@ def download_year(
         fname = f"orto_{year}_1km_{northing_km}_{easting_km}.tif"
         path  = year_dir / fname
         path.with_suffix(".tmp").unlink(missing_ok=True)   # clean up any interrupted write
-        if not force and path.exists() and path.stat().st_size > 100_000:
+        if not force and _is_complete(path, pixels_for_gsd(gsd_m)):
             n_skip += 1
         else:
             to_download.append((northing_km, easting_km, path))
@@ -357,7 +390,7 @@ def download_year(
     def _worker(args: tuple):
         northing_km, easting_km, path = args
         try:
-            meta = download_subtile(northing_km, easting_km, year, token, path)
+            meta = download_subtile(northing_km, easting_km, year, token, path, gsd_m)
             with lock:
                 counter[0] += 1
                 done.append(meta)
@@ -368,9 +401,10 @@ def download_year(
                 )
         except Exception as exc:
             with lock:
-                failed.append((northing_km, easting_km, str(exc)))
+                failed.append((northing_km, easting_km, redact(str(exc))))
                 print(
-                    f"  [FAIL] orto_{year}_1km_{northing_km}_{easting_km}.tif  {exc}",
+                    f"  [FAIL] orto_{year}_1km_{northing_km}_{easting_km}.tif  "
+                    f"{redact(str(exc))}",
                     file=sys.stderr,
                 )
 
@@ -403,7 +437,7 @@ def parse_tile(raw: str) -> tuple[int, int]:
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Download orthophoto tiles (12.5 cm/px) from dataforsyningen.dk WMS",
+        description="Download orthophoto tiles from dataforsyningen.dk WMS",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(
@@ -419,6 +453,12 @@ def parse_args():
     p.add_argument(
         "--workers", type=int, default=4,
         help="Concurrent download threads",
+    )
+    p.add_argument(
+        "--gsd", type=float, default=DEFAULT_GSD, choices=GSD_CHOICES,
+        metavar="M_PER_PX",
+        help=f"Output resolution in m/px. Choices: {GSD_CHOICES} "
+             f"(0.125 = native 12.5 cm, 0.25 = half resolution)",
     )
     p.add_argument(
         "--force", action="store_true",
@@ -455,6 +495,7 @@ def main():
     e_min = args.e * 10_000
     n_min = args.n * 10_000
     n_tiles_total = len(args.years) * SUBTILE_GRID ** 2
+    px = pixels_for_gsd(args.gsd)
 
     print(f"\nOrthophoto downloader — dataforsyningen.dk")
     print(f"  Tile     : ({args.n}, {args.e})")
@@ -462,10 +503,10 @@ def main():
     print(f"  Easting  : {e_min:,}–{e_min + 10_000:,} m  (UTM 32N)")
     print(f"  Years    : {args.years}")
     print(f"  Workers  : {args.workers}")
-    print(f"  GSD      : {GSD_M} m/px  "
-          f"({PIXELS_PER_TILE}×{PIXELS_PER_TILE} px per 1 km tile)")
+    print(f"  GSD      : {args.gsd} m/px  "
+          f"({px}×{px} px per 1 km tile)")
     print(f"  Max tiles: {n_tiles_total}  "
-          f"(≈{n_tiles_total * PIXELS_PER_TILE ** 2 * 3 / 1e9:.0f} GB uncompressed if all new)")
+          f"(≈{n_tiles_total * px ** 2 * 3 / 1e9:.0f} GB uncompressed if all new)")
 
     grand_dl = grand_skip = grand_fail = 0
     for year in sorted(args.years):
@@ -473,6 +514,7 @@ def main():
             args.n, args.e, year, token,
             force=args.force,
             n_workers=args.workers,
+            gsd_m=args.gsd,
         )
         grand_dl   += dl
         grand_skip += sk

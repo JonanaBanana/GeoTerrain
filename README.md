@@ -155,6 +155,7 @@ python3 src/download_orto_forsyningen.py --tile 623,57 --force
 | `--tile` | required | Tile index `N,E` or UTM lower-left, e.g. `623,57` or `6230000 570000` |
 | `--years` | all available (2021–2025) | One or more years to download, e.g. `--years 2024 2023` |
 | `--workers` | `4` | Concurrent download threads |
+| `--gsd` | `0.125` | Output resolution in m/px: `0.125` (native, 8000 px per 1 km), `0.25` (half, 4000 px), `0.5`, `1.0` |
 | `--force` | — | Re-download tiles that already exist on disk |
 
 **Token setup:** add a `forsyningen_token` entry to `config/api_key.yaml` (separate from the `api_key` field used by `download_terrain.py`):
@@ -214,8 +215,8 @@ python3 src/generate_terrain.py inputs/tile_N_E --out N_E_inner \
 |---|---|---|
 | `tile` | required | Path to tile folder, e.g. `inputs/tile_N_E` |
 | `--out` | required | Output folder name under `outputs/` |
-| `--resolution` | `10.0` | Mesh vertex spacing in metres |
-| `--size` | `4096` | Texture long-edge size in pixels |
+| `--resolution` | `2.0` | Mesh vertex spacing in metres |
+| `--size` | `16000` | Texture long-edge size in pixels (capped at native satellite resolution) |
 | `--tiles` | `1` | Split into N×N mesh tiles and N×N texture tiles |
 | `--crop MIN_X MAX_X MIN_Y MAX_Y` | — | Crop bounding box as fractions 0–1 (X: 0=west, Y: 0=south) |
 | `--invert-crop` | — | Export the 4 outer strips around `--crop` instead of the inner region |

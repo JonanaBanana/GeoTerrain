@@ -77,6 +77,14 @@ def tile_bounds(n: int, e: int) -> dict:
 # URL BUILDERS
 # ══════════════════════════════════════════════════════════════════════════════
 
+_SECRET_PARAM = re.compile(r"((?:apiKey|token)=)[^&\s'\"]+", re.IGNORECASE)
+
+
+def redact(text: str) -> str:
+    """Mask apiKey/token query values so error messages never print the key."""
+    return _SECRET_PARAM.sub(r"\1***", text)
+
+
 def _raster_file_url(filename: str, key: str) -> str:
     return f"{BASE_URL}/GetRasterFile?FileName={filename}&apiKey={key}"
 
@@ -182,7 +190,7 @@ def download_satellite(n: int, e: int, key: str):
         sr.raise_for_status()
         print(f"  {sr.text.strip()}")
     except requests.RequestException as exc:
-        print(f"  (size query failed: {exc})")
+        print(f"  (size query failed: {redact(str(exc))})")
 
     print("\nDownloading satellite tiles …")
     fd, tmp_name = tempfile.mkstemp(suffix=".zip")
@@ -461,4 +469,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except requests.RequestException as exc:
+        # requests embeds the full URL (incl. apiKey) in its messages; print a
+        # redacted one-liner instead of letting the traceback expose it.
+        print(f"\nDownload failed: {redact(str(exc))}", file=sys.stderr)
+        sys.exit(1)
